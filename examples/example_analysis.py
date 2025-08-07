@@ -30,7 +30,7 @@ def main():
     file_path = "path/to/your/sleap_output.h5"  # CHANGE THIS
     
     # Node of interest (must match a node name in your SLEAP model)
-    main_node = "neck"  # CHANGE THIS - options might include: head, neck, thorax, etc.
+    main_node = "bodycenter"  # CHANGE THIS - options might include: head, bodycenter, thorax, etc.
     
     # Analysis parameters
     fps = 30  # Frame rate of your video

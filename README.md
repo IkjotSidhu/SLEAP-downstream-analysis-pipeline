@@ -50,7 +50,7 @@ from sleap_plotting import plotting_SLEAP, AnalysisConfig
 # Run complete analysis pipeline
 results = plotting_SLEAP(
     file_path="your_sleap_data.h5",
-    main_node="neck",  # Choose your node of interest
+    main_node="bodycenter",  # Choose your node of interest
     fps=30,
     output_dir="./analysis_results"
 )
@@ -78,7 +78,7 @@ config.update(
 # Run analysis with custom config
 results = plotting_SLEAP(
     file_path="data.h5",
-    main_node="head",
+    main_node="bodycenter",
     fps=config.fps,
     output_dir="./custom_analysis"
 )
@@ -91,10 +91,10 @@ results = plotting_SLEAP(
 locations, node_names, frame_count, node_count, instance_count = load_sleap_data("data.h5")
 
 # Run specific analyses
-plot_node_trajectories(locations, node_index=0, node_name="neck")
-distances = analyze_inter_mouse_distance(locations, node_index=0, node_name="neck")
-velocities = analyze_velocities(locations, node_index=0, node_name="neck")
-analyze_cumulative_distance(locations, node_index=0, node_name="neck")
+plot_node_trajectories(locations, node_index=0, node_name="bodycenter")
+distances = analyze_inter_mouse_distance(locations, node_index=0, node_name="bodycenter")
+velocities = analyze_velocities(locations, node_index=0, node_name="bodycenter")
+analyze_cumulative_distance(locations, node_index=0, node_name="bodycenter")
 ```
 
 ## 📁 Repository Structure
@@ -156,7 +156,7 @@ The pipeline expects HDF5 files from SLEAP with:
 
 ### Data Preparation
 - Ensure SLEAP predictions are of good quality before analysis
-- Choose stable, well-tracked nodes (e.g., "neck", "centroid") as primary nodes
+- Choose stable, well-tracked nodes (e.g., "bodycenter", "centroid") as primary nodes
 - Verify frame rate settings match your video data
 
 ### Analysis Tips
@@ -206,7 +206,7 @@ If you use this pipeline in your research, please cite:
 ```bibtex
 @software{sleap_analysis_pipeline,
   title={SLEAP Analysis Pipeline},
-  author={Your Name},
+  author=Ikjot Sidhu,
   year={2025},
   url={https://github.com/yourusername/sleap-analysis-pipeline}
 }

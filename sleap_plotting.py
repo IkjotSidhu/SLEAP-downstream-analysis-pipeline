@@ -431,7 +431,7 @@ def main():
     
     # Example usage (replace with your actual file path and node name)
     file_path = "path/to/your/sleap_output.h5"
-    main_node = "neck"  # or whatever node you want to analyze
+    main_node = "bodycenter"  # or whatever node you want to analyze
     output_dir = "./analysis_results"
     
     try:
