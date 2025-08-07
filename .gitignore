@@ -138,6 +138,12 @@ output/
 *.png
 *.svg
 
+# Allow images in assets folder for documentation
+!assets/*.png
+!assets/*.svg
+!assets/*.jpg
+!assets/*.jpeg
+
 # IDE
 .vscode/
 .idea/
