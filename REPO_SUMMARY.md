@@ -70,8 +70,8 @@ sleap-analysis-pipeline/
 cd /Users/ikjot.sidhu
 ./setup_repo.sh  # This will initialize git and create initial commit
 
-# Add your GitHub remote (replace 'yourusername' with your GitHub username)
-git remote add origin https://github.com/yourusername/sleap-analysis-pipeline.git
+# Add your GitHub remote (replace 'IkjotSidhu' with your GitHub username if forking)
+git remote add origin https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline.git
 git branch -M main
 git push -u origin main
 ```
@@ -94,17 +94,15 @@ After pushing to GitHub:
 ### For Users
 ```bash
 # Install from GitHub (after you push)
-pip install git+https://github.com/yourusername/sleap-analysis-pipeline.git
+pip install git+https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline.git
 
-# Or clone and install locally
-git clone https://github.com/yourusername/sleap-analysis-pipeline.git
-cd sleap-analysis-pipeline
-pip install -e .
+# Development installation:
+git clone https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline.git
 ```
 
 ### For Developers
 ```bash
-git clone https://github.com/yourusername/sleap-analysis-pipeline.git
+git clone https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline.git
 cd sleap-analysis-pipeline
 pip install -e ".[dev]"  # Includes development dependencies
 pytest tests/  # Run tests

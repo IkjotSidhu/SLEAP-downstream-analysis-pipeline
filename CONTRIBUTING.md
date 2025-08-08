@@ -41,7 +41,7 @@ Thank you for your interest in contributing to the SLEAP Analysis Pipeline! This
 
 1. **Fork and clone the repository:**
 ```bash
-git clone https://github.com/yourusername/sleap-analysis-pipeline.git
+git clone https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline.git
 cd sleap-analysis-pipeline
 ```
 

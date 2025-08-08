@@ -17,12 +17,12 @@ with open('requirements.txt', 'r') as f:
 setup(
     name="sleap-analysis-pipeline",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Ikjot Sidhu",
+    author_email="ikjotsdh@bu.edu",
     description="A comprehensive Python pipeline for analyzing SLEAP tracking data",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/sleap-analysis-pipeline",
+    url="https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline",
     py_modules=["sleap_plotting"],
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -60,9 +60,9 @@ setup(
         ],
     },
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/sleap-analysis-pipeline/issues",
-        "Source": "https://github.com/yourusername/sleap-analysis-pipeline",
-        "Documentation": "https://github.com/yourusername/sleap-analysis-pipeline/blob/main/README.md",
+        "Bug Reports": "https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline/issues",
+        "Source": "https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline",
+        "Documentation": "https://github.com/IkjotSidhu/SLEAP-downstream-analysis-pipeline/blob/main/README.md",
     },
     keywords="sleap animal tracking behavior analysis computer vision",
     include_package_data=True,

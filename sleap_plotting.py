@@ -427,7 +427,7 @@ def main():
     """Example usage of the SLEAP analysis pipeline."""
     # Example configuration
     config = AnalysisConfig()
-    config.update(fps=25, velocity_window=15)  # Customize as needed
+    config.update(fps=30, velocity_window=15)  # Customize as needed
     
     # Example usage (replace with your actual file path and node name)
     file_path = "path/to/your/sleap_output.h5"

@@ -27,7 +27,7 @@ def main():
     # =============================================================================
     
     # Path to your SLEAP HDF5 output file
-    file_path = "path/to/your/sleap_output.h5"  # CHANGE THIS
+    file_path = ''  # CHANGE THIS
     
     # Node of interest (must match a node name in your SLEAP model)
     main_node = "bodycenter"  # CHANGE THIS - options might include: head, bodycenter, thorax, etc.
