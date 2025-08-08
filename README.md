@@ -168,7 +168,7 @@ The pipeline expects HDF5 files from SLEAP with:
 - Verify frame rate settings match your video data
 
 ### Analysis Tips
-- Use appropriate velocity smoothing windows (15-50 frames typical)
+- Use appropriate velocity smoothing windows (30+ frames typical)
 - Check missing data percentage before analysis
 - Save intermediate results for large datasets
 
@@ -186,22 +186,6 @@ Run the test suite to verify installation:
 python -m pytest tests/
 ```
 
-## 🤝 Contributing
-
-Contributions are welcome! Here are ways to extend the pipeline:
-
-- **New Analysis Methods**: Angular velocity, social behavior metrics
-- **Statistical Tests**: Behavioral comparisons, significance testing  
-- **Interactive Visualizations**: Plotly/Bokeh integration
-- **Batch Processing**: Multi-file analysis workflows
-- **Export Formats**: CSV/Excel data export
-
-### Development Setup
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Make changes and add tests
-4. Submit a pull request
 
 ## 📜 License
 
