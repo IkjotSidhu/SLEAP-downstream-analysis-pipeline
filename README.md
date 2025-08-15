@@ -126,8 +126,9 @@ sleap-analysis-pipeline/
 
 ## 📊 Output Files
 
-The pipeline generates several types of visualizations saved as PDF files:
+The pipeline generates both visualizations (PDF) and data files (CSV) for further analysis:
 
+### PDF Visualizations
 | File | Description |
 |------|-------------|
 | `{node}_locations.pdf` | Time-series position plots |
@@ -137,6 +138,14 @@ The pipeline generates several types of visualizations saved as PDF files:
 | `Mouse-1-{node}-velocity-plot.pdf` | Velocity analysis for animal 1 |
 | `Mouse-2-{node}-velocity-plot.pdf` | Velocity analysis for animal 2 |
 | `Cumulative-distance-over-time-{node}.pdf` | Cumulative movement analysis |
+
+### CSV Data Files
+| File | Description | Columns |
+|------|-------------|---------|
+| `{node}_trajectories.csv` | Raw position data | frame, mouse1_x, mouse1_y, mouse2_x, mouse2_y |
+| `{node}_inter_mouse_distances.csv` | Distance measurements | frame, time_seconds, inter_mouse_distance_pixels, mouse1_x, mouse1_y, mouse2_x, mouse2_y |
+| `{node}_velocities.csv` | Velocity calculations | frame, mouse1_velocity_pixels_per_frame, mouse2_velocity_pixels_per_frame, positions |
+| `{node}_cumulative_distances.csv` | Movement statistics | frame, mouse1_frame_distance, mouse1_cumulative_distance, mouse2_frame_distance, mouse2_cumulative_distance |
 
 ## 🔧 Configuration Options
 

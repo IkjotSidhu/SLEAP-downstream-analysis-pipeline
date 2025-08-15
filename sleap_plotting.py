@@ -25,6 +25,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import h5py
 import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
 
@@ -241,6 +242,19 @@ def plot_node_trajectories(locations, node_index, node_name, output_dir="./"):
     """Plot node location trajectories over time."""
     nod_loc = locations[:, node_index, :, :]
     
+    # Save trajectory data to CSV
+    frames = np.arange(nod_loc.shape[0])
+    trajectory_data = pd.DataFrame({
+        'frame': frames,
+        'mouse1_x': nod_loc[:, 0, 0],
+        'mouse1_y': nod_loc[:, 1, 0],
+        'mouse2_x': nod_loc[:, 0, 1],
+        'mouse2_y': nod_loc[:, 1, 1]
+    })
+    csv_path = f"{output_dir}/{node_name}_trajectories.csv"
+    trajectory_data.to_csv(csv_path, index=False)
+    print(f"Trajectory data saved to: {csv_path}")
+    
     # Time series plot
     plt.figure(figsize=(12, 6))
     plt.plot(nod_loc[:, 0, 0], 'y', label='mouse-1', linewidth=2)
@@ -283,6 +297,22 @@ def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, outpu
 
     # Compute Euclidean distance per frame
     inter_mouse_distance = np.linalg.norm(mouse1_xy - mouse2_xy, axis=1)
+    
+    # Save distance data to CSV
+    frames = np.arange(len(inter_mouse_distance))
+    time = frames / fps
+    distance_data = pd.DataFrame({
+        'frame': frames,
+        'time_seconds': time,
+        'inter_mouse_distance_pixels': inter_mouse_distance,
+        'mouse1_x': mouse1_xy[:, 0],
+        'mouse1_y': mouse1_xy[:, 1],
+        'mouse2_x': mouse2_xy[:, 0],
+        'mouse2_y': mouse2_xy[:, 1]
+    })
+    csv_path = f"{output_dir}/{node_name}_inter_mouse_distances.csv"
+    distance_data.to_csv(csv_path, index=False)
+    print(f"Inter-mouse distance data saved to: {csv_path}")
 
     # Plot distance by frame
     plt.figure(figsize=(12, 6))
@@ -296,7 +326,6 @@ def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, outpu
     plt.show()
 
     # Plot distance by time
-    time = np.arange(len(inter_mouse_distance)) / fps
     plt.figure(figsize=(12, 6))
     plt.plot(time, inter_mouse_distance, label='Inter-mouse Distance', linewidth=2)
     plt.xlabel("Time (s)")
@@ -317,6 +346,21 @@ def analyze_velocities(locations, node_index, node_name, output_dir="./"):
     # Calculate velocities for both mice
     vel_mouse1 = smooth_diff(nod_loc[:, :, 0])
     vel_mouse2 = smooth_diff(nod_loc[:, :, 1])
+    
+    # Save velocity data to CSV
+    frames = np.arange(len(vel_mouse1))
+    velocity_data = pd.DataFrame({
+        'frame': frames,
+        'mouse1_velocity_pixels_per_frame': vel_mouse1,
+        'mouse2_velocity_pixels_per_frame': vel_mouse2,
+        'mouse1_x_position': nod_loc[:, 0, 0],
+        'mouse1_y_position': nod_loc[:, 1, 0],
+        'mouse2_x_position': nod_loc[:, 0, 1],
+        'mouse2_y_position': nod_loc[:, 1, 1]
+    })
+    csv_path = f"{output_dir}/{node_name}_velocities.csv"
+    velocity_data.to_csv(csv_path, index=False)
+    print(f"Velocity data saved to: {csv_path}")
     
     # Plot for Mouse 1
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8), sharex=True)
@@ -360,6 +404,9 @@ def analyze_cumulative_distance(locations, node_index, node_name, output_dir="./
     """Calculate and plot cumulative distance traveled."""
     plt.figure(figsize=(12, 6))
     
+    # Prepare data for CSV export
+    cumulative_data = {'frame': np.arange(locations.shape[0] - 1)}  # -1 because diff reduces length by 1
+    
     for instance in [0, 1]:  # Loop over two mice
         x = locations[:, node_index, 0, instance]
         y = locations[:, node_index, 1, instance]
@@ -371,9 +418,19 @@ def analyze_cumulative_distance(locations, node_index, node_name, output_dir="./
     
         # Compute cumulative distance
         cumulative_distance = np.cumsum(distances)
+        
+        # Store data for CSV
+        cumulative_data[f'mouse{instance+1}_frame_distance'] = distances
+        cumulative_data[f'mouse{instance+1}_cumulative_distance'] = cumulative_distance
     
         # Plot
         plt.plot(cumulative_distance, label=f"Mouse {instance+1} ({node_name})", linewidth=2)
+    
+    # Save cumulative distance data to CSV
+    cumulative_df = pd.DataFrame(cumulative_data)
+    csv_path = f"{output_dir}/{node_name}_cumulative_distances.csv"
+    cumulative_df.to_csv(csv_path, index=False)
+    print(f"Cumulative distance data saved to: {csv_path}")
     
     # Final plot styling
     plt.xlabel("Frame")

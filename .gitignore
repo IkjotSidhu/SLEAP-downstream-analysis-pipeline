@@ -137,6 +137,7 @@ output/
 *.pdf
 *.png
 *.svg
+*.csv
 
 # Allow images in assets folder for documentation
 !assets/*.png
