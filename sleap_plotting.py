@@ -1,3 +1,7 @@
+import json
+import numpy as np
+import h5py
+
 """
 SLEAP Analysis Pipeline
 
@@ -59,8 +63,54 @@ def validate_file_path(file_path):
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
     
-    if not file_path.endswith(('.h5', '.hdf5')):
-        print(f"Warning: File '{file_path}' may not be a valid HDF5 file")
+    if not file_path.endswith('.h5'):
+        raise ValueError(f"Expected .h5 file, got: {file_path}")
+
+def calculate_pixel_to_cm_conversion(locations, box_size_inches=(11, 11)):
+    """
+    Calculate the pixel-to-centimeter conversion factor based on the arena size.
+    
+    Parameters:
+    -----------
+    locations : numpy.ndarray
+        SLEAP tracking data array
+    box_size_inches : tuple
+        Arena dimensions in inches (width, height)
+    
+    Returns:
+    --------
+    float : Conversion factor from pixels to centimeters
+    """
+    # Convert inches to centimeters
+    box_size_cm = (box_size_inches[0] * 2.54, box_size_inches[1] * 2.54)
+    
+    # Calculate the range of pixel coordinates across all animals and frames
+    # Remove NaN values for accurate calculation
+    valid_x = locations[:, :, 0, :][~np.isnan(locations[:, :, 0, :])]
+    valid_y = locations[:, :, 1, :][~np.isnan(locations[:, :, 1, :])]
+    
+    if len(valid_x) == 0 or len(valid_y) == 0:
+        raise ValueError("No valid tracking data found for conversion calculation")
+    
+    # Calculate the pixel range (assuming animals use the full arena space)
+    pixel_range_x = np.max(valid_x) - np.min(valid_x)
+    pixel_range_y = np.max(valid_y) - np.min(valid_y)
+    
+    # Use the larger dimension for more accurate conversion
+    # (assumes square arena or that tracking uses full space)
+    pixel_range = max(pixel_range_x, pixel_range_y)
+    arena_size_cm = max(box_size_cm)
+    
+    # Calculate conversion factor: cm per pixel
+    cm_per_pixel = arena_size_cm / pixel_range
+    
+    print(f"Pixel-to-CM Conversion:")
+    print(f"- Arena size: {box_size_inches[0]}\" × {box_size_inches[1]}\" ({box_size_cm[0]:.1f} × {box_size_cm[1]:.1f} cm)")
+    print(f"- Pixel range: {pixel_range:.1f} pixels")
+    print(f"- Conversion factor: {cm_per_pixel:.4f} cm/pixel")
+    print()
+    
+    return cm_per_pixel
 
 def get_data_summary(locations, node_names):
     """Generate a summary of the tracking data."""
@@ -238,14 +288,16 @@ def load_sleap_data(file_path):
     
     return locations, node_names, frame_count, node_count, instance_count
 
-def plot_node_trajectories(locations, node_index, node_name, output_dir="./"):
+def plot_node_trajectories(locations, node_index, node_name, fps=30, output_dir="./"):
     """Plot node location trajectories over time."""
     nod_loc = locations[:, node_index, :, :]
     
     # Save trajectory data to CSV
     frames = np.arange(nod_loc.shape[0])
+    time_seconds = frames / fps
     trajectory_data = pd.DataFrame({
         'frame': frames,
+        'time_seconds': time_seconds,
         'mouse1_x': nod_loc[:, 0, 0],
         'mouse1_y': nod_loc[:, 1, 0],
         'mouse2_x': nod_loc[:, 0, 1],
@@ -254,6 +306,33 @@ def plot_node_trajectories(locations, node_index, node_name, output_dir="./"):
     csv_path = f"{output_dir}/{node_name}_trajectories.csv"
     trajectory_data.to_csv(csv_path, index=False)
     print(f"Trajectory data saved to: {csv_path}")
+    
+    # Save data split by seconds (aggregated per second)
+    trajectory_data['time_seconds_rounded'] = np.floor(time_seconds).astype(int)
+    seconds_data = trajectory_data.groupby('time_seconds_rounded').agg({
+        'mouse1_x': 'mean',
+        'mouse1_y': 'mean',
+        'mouse2_x': 'mean',
+        'mouse2_y': 'mean'
+    }).reset_index()
+    seconds_data.rename(columns={'time_seconds_rounded': 'time_seconds'}, inplace=True)
+    
+    seconds_csv_path = f"{output_dir}/{node_name}_trajectories_by_seconds.csv"
+    seconds_data.to_csv(seconds_csv_path, index=False)
+    print(f"Trajectory data (by seconds) saved to: {seconds_csv_path}")
+    
+    # Save data split by minutes (aggregated per minute)
+    trajectory_data['time_minutes'] = np.floor(time_seconds / 60).astype(int)
+    minutes_data = trajectory_data.groupby('time_minutes').agg({
+        'mouse1_x': 'mean',
+        'mouse1_y': 'mean',
+        'mouse2_x': 'mean',
+        'mouse2_y': 'mean'
+    }).reset_index()
+    
+    minutes_csv_path = f"{output_dir}/{node_name}_trajectories_by_minutes.csv"
+    minutes_data.to_csv(minutes_csv_path, index=False)
+    print(f"Trajectory data (by minutes) saved to: {minutes_csv_path}")
     
     # Time series plot
     plt.figure(figsize=(12, 6))
@@ -282,8 +361,42 @@ def plot_node_trajectories(locations, node_index, node_name, output_dir="./"):
     plt.savefig(f"{output_dir}/{node_name}_Node-Mouse-Tracking-plot.pdf", format='pdf', bbox_inches="tight")
     plt.show()
 
-def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, output_dir="./"):
-    """Calculate and plot inter-mouse distances."""
+def plot_spatial_trajectories_by_30min(locations, node_index, node_name, fps=30, output_dir="./"):
+    """
+    Plot spatial trajectories split into 30-minute intervals and save all plots into a single PDF file.
+    """
+    import math
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    nod_loc = locations[:, node_index, :, :]
+    frames_per_30min = int(30 * 60 * fps)
+    total_frames = nod_loc.shape[0]
+    n_intervals = math.ceil(total_frames / frames_per_30min)
+
+    pdf_path = f"{output_dir}/{node_name}_Spatial-Trajectories-by-30min.pdf"
+    with PdfPages(pdf_path) as pdf:
+        for i in range(n_intervals):
+            start = i * frames_per_30min
+            end = min((i + 1) * frames_per_30min, total_frames)
+            plt.figure(figsize=(10, 10))
+            plt.plot(nod_loc[start:end, 0, 0], nod_loc[start:end, 1, 0], 'y', label='mouse-1', alpha=0.7)
+            plt.plot(nod_loc[start:end, 0, 1], nod_loc[start:end, 1, 1], 'g', label='mouse-2', alpha=0.7)
+            plt.legend()
+            plt.title(f"{node_name} Spatial Trajectories (Frames {start}–{end}) | Interval {i+1} of {n_intervals}")
+            plt.xlabel("X position (pixels)")
+            plt.ylabel("Y position (pixels)")
+            plt.axis('equal')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            pdf.savefig()
+            plt.close()
+    print(f"Spatial trajectory plots (30-min intervals) saved to: {pdf_path}")
+
+def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, output_dir="./", box_size_inches=(11, 11)):
+    """Calculate and plot inter-mouse distances in both pixels and centimeters."""
+    # Calculate pixel-to-cm conversion factor
+    cm_per_pixel = calculate_pixel_to_cm_conversion(locations, box_size_inches)
+    
     # Calculate inter-mouse distances
     mouse1_xy = np.stack([
         locations[:, node_index, 0, 0],  # x for mouse 1
@@ -296,15 +409,17 @@ def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, outpu
     ], axis=1)
 
     # Compute Euclidean distance per frame
-    inter_mouse_distance = np.linalg.norm(mouse1_xy - mouse2_xy, axis=1)
+    inter_mouse_distance_pixels = np.linalg.norm(mouse1_xy - mouse2_xy, axis=1)
+    inter_mouse_distance_cm = inter_mouse_distance_pixels * cm_per_pixel
     
     # Save distance data to CSV
-    frames = np.arange(len(inter_mouse_distance))
+    frames = np.arange(len(inter_mouse_distance_pixels))
     time = frames / fps
     distance_data = pd.DataFrame({
         'frame': frames,
         'time_seconds': time,
-        'inter_mouse_distance_pixels': inter_mouse_distance,
+        'inter_mouse_distance_pixels': inter_mouse_distance_pixels,
+        'inter_mouse_distance_cm': inter_mouse_distance_cm,
         'mouse1_x': mouse1_xy[:, 0],
         'mouse1_y': mouse1_xy[:, 1],
         'mouse2_x': mouse2_xy[:, 0],
@@ -313,33 +428,94 @@ def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, outpu
     csv_path = f"{output_dir}/{node_name}_inter_mouse_distances.csv"
     distance_data.to_csv(csv_path, index=False)
     print(f"Inter-mouse distance data saved to: {csv_path}")
+    
+    # Save data split by seconds (aggregated per second)
+    distance_data['time_seconds_rounded'] = np.floor(time).astype(int)
+    seconds_data = distance_data.groupby('time_seconds_rounded').agg({
+        'inter_mouse_distance_pixels': ['mean', 'std', 'min', 'max', 'count'],
+        'inter_mouse_distance_cm': ['mean', 'std', 'min', 'max', 'count'],
+        'mouse1_x': 'mean',
+        'mouse1_y': 'mean',
+        'mouse2_x': 'mean',
+        'mouse2_y': 'mean'
+    }).reset_index()
+    
+    # Flatten column names
+    seconds_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in seconds_data.columns.values]
+    seconds_data.rename(columns={'time_seconds_rounded_': 'time_seconds'}, inplace=True)
+    
+    seconds_csv_path = f"{output_dir}/{node_name}_inter_mouse_distances_by_seconds.csv"
+    seconds_data.to_csv(seconds_csv_path, index=False)
+    print(f"Inter-mouse distance data (by seconds) saved to: {seconds_csv_path}")
+    
+    # Save data split by minutes (aggregated per minute)
+    distance_data['time_minutes'] = np.floor(time / 60).astype(int)
+    minutes_data = distance_data.groupby('time_minutes').agg({
+        'inter_mouse_distance_pixels': ['mean', 'std', 'min', 'max', 'count'],
+        'inter_mouse_distance_cm': ['mean', 'std', 'min', 'max', 'count'],
+        'mouse1_x': 'mean',
+        'mouse1_y': 'mean',
+        'mouse2_x': 'mean',
+        'mouse2_y': 'mean'
+    }).reset_index()
+    
+    # Flatten column names
+    minutes_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in minutes_data.columns.values]
+    minutes_data.rename(columns={'time_minutes_': 'time_minutes'}, inplace=True)
+    
+    minutes_csv_path = f"{output_dir}/{node_name}_inter_mouse_distances_by_minutes.csv"
+    minutes_data.to_csv(minutes_csv_path, index=False)
+    print(f"Inter-mouse distance data (by minutes) saved to: {minutes_csv_path}")
 
-    # Plot distance by frame
+    # Plot distance by frame (pixels)
     plt.figure(figsize=(12, 6))
-    plt.plot(inter_mouse_distance, linewidth=2)
+    plt.plot(inter_mouse_distance_pixels, linewidth=2)
     plt.xlabel("Frame")
     plt.ylabel("Inter-Mouse Distance (pixels)")
-    plt.title("Distance between mice over time")
+    plt.title("Distance between mice over time (Pixels)")
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(f"{output_dir}/{node_name}_Inter-Mouse-Distance-by-Frame.pdf", format='pdf', bbox_inches="tight")
     plt.show()
 
-    # Plot distance by time
+    # Plot distance by time (pixels)
     plt.figure(figsize=(12, 6))
-    plt.plot(time, inter_mouse_distance, label='Inter-mouse Distance', linewidth=2)
+    plt.plot(time, inter_mouse_distance_pixels, label='Inter-mouse Distance', linewidth=2)
     plt.xlabel("Time (s)")
     plt.ylabel("Distance (pixels)")
-    plt.title("Distance Between Mice Over Time")
+    plt.title("Distance Between Mice Over Time (Pixels)")
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
     plt.savefig(f"{output_dir}/{node_name}_Inter-Mouse-Distance-by-second.pdf", format='pdf', bbox_inches="tight")
     plt.show()
     
-    return inter_mouse_distance
+    # Plot distance by frame (centimeters) - NEW
+    plt.figure(figsize=(12, 6))
+    plt.plot(inter_mouse_distance_cm, linewidth=2, color='red')
+    plt.xlabel("Frame")
+    plt.ylabel("Inter-Mouse Distance (cm)")
+    plt.title("Distance between mice over time (Centimeters)")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/{node_name}_Inter-Mouse-Distance-by-Frame-CM.pdf", format='pdf', bbox_inches="tight")
+    plt.show()
 
-def analyze_velocities(locations, node_index, node_name, output_dir="./"):
+    # Plot distance by time (centimeters) - NEW
+    plt.figure(figsize=(12, 6))
+    plt.plot(time, inter_mouse_distance_cm, label='Inter-mouse Distance (cm)', linewidth=2, color='red')
+    plt.xlabel("Time (s)")
+    plt.ylabel("Distance (cm)")
+    plt.title("Distance Between Mice Over Time (Centimeters)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/{node_name}_Inter-Mouse-Distance-by-second-CM.pdf", format='pdf', bbox_inches="tight")
+    plt.show()
+    
+    return inter_mouse_distance_pixels, inter_mouse_distance_cm
+
+def analyze_velocities(locations, node_index, node_name, fps=30, output_dir="./"):
     """Calculate and plot velocity profiles for both mice."""
     nod_loc = locations[:, node_index, :, :]
     
@@ -349,10 +525,14 @@ def analyze_velocities(locations, node_index, node_name, output_dir="./"):
     
     # Save velocity data to CSV
     frames = np.arange(len(vel_mouse1))
+    time_seconds = frames / fps
     velocity_data = pd.DataFrame({
         'frame': frames,
+        'time_seconds': time_seconds,
         'mouse1_velocity_pixels_per_frame': vel_mouse1,
         'mouse2_velocity_pixels_per_frame': vel_mouse2,
+        'mouse1_velocity_pixels_per_second': vel_mouse1 * fps,
+        'mouse2_velocity_pixels_per_second': vel_mouse2 * fps,
         'mouse1_x_position': nod_loc[:, 0, 0],
         'mouse1_y_position': nod_loc[:, 1, 0],
         'mouse2_x_position': nod_loc[:, 0, 1],
@@ -361,6 +541,48 @@ def analyze_velocities(locations, node_index, node_name, output_dir="./"):
     csv_path = f"{output_dir}/{node_name}_velocities.csv"
     velocity_data.to_csv(csv_path, index=False)
     print(f"Velocity data saved to: {csv_path}")
+    
+    # Save data split by seconds (aggregated per second)
+    velocity_data['time_seconds_rounded'] = np.floor(time_seconds).astype(int)
+    seconds_data = velocity_data.groupby('time_seconds_rounded').agg({
+        'mouse1_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
+        'mouse2_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
+        'mouse1_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
+        'mouse2_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
+        'mouse1_x_position': 'mean',
+        'mouse1_y_position': 'mean',
+        'mouse2_x_position': 'mean',
+        'mouse2_y_position': 'mean'
+    }).reset_index()
+    
+    # Flatten column names
+    seconds_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in seconds_data.columns.values]
+    seconds_data.rename(columns={'time_seconds_rounded_': 'time_seconds'}, inplace=True)
+    
+    seconds_csv_path = f"{output_dir}/{node_name}_velocities_by_seconds.csv"
+    seconds_data.to_csv(seconds_csv_path, index=False)
+    print(f"Velocity data (by seconds) saved to: {seconds_csv_path}")
+    
+    # Save data split by minutes (aggregated per minute)
+    velocity_data['time_minutes'] = np.floor(time_seconds / 60).astype(int)
+    minutes_data = velocity_data.groupby('time_minutes').agg({
+        'mouse1_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
+        'mouse2_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
+        'mouse1_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
+        'mouse2_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
+        'mouse1_x_position': 'mean',
+        'mouse1_y_position': 'mean',
+        'mouse2_x_position': 'mean',
+        'mouse2_y_position': 'mean'
+    }).reset_index()
+    
+    # Flatten column names
+    minutes_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in minutes_data.columns.values]
+    minutes_data.rename(columns={'time_minutes_': 'time_minutes'}, inplace=True)
+    
+    minutes_csv_path = f"{output_dir}/{node_name}_velocities_by_minutes.csv"
+    minutes_data.to_csv(minutes_csv_path, index=False)
+    print(f"Velocity data (by minutes) saved to: {minutes_csv_path}")
     
     # Plot for Mouse 1
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8), sharex=True)
@@ -400,12 +622,20 @@ def analyze_velocities(locations, node_index, node_name, output_dir="./"):
     
     return vel_mouse1, vel_mouse2
 
-def analyze_cumulative_distance(locations, node_index, node_name, output_dir="./"):
-    """Calculate and plot cumulative distance traveled."""
+def analyze_cumulative_distance(locations, node_index, node_name, fps=30, output_dir="./", box_size_inches=(11, 11)):
+    """Calculate and plot cumulative distance traveled in both pixels and centimeters."""
+    # Calculate pixel-to-cm conversion factor
+    cm_per_pixel = calculate_pixel_to_cm_conversion(locations, box_size_inches)
+    
     plt.figure(figsize=(12, 6))
     
     # Prepare data for CSV export
-    cumulative_data = {'frame': np.arange(locations.shape[0] - 1)}  # -1 because diff reduces length by 1
+    frames = np.arange(locations.shape[0] - 1)  # -1 because diff reduces length by 1
+    time_seconds = frames / fps
+    cumulative_data = {
+        'frame': frames,
+        'time_seconds': time_seconds
+    }
     
     for instance in [0, 1]:  # Loop over two mice
         x = locations[:, node_index, 0, instance]
@@ -414,17 +644,21 @@ def analyze_cumulative_distance(locations, node_index, node_name, output_dir="./
     
         # Compute per-frame displacement
         diffs = np.diff(xy, axis=0)
-        distances = np.linalg.norm(diffs, axis=1)
+        distances_pixels = np.linalg.norm(diffs, axis=1)
+        distances_cm = distances_pixels * cm_per_pixel
     
         # Compute cumulative distance
-        cumulative_distance = np.cumsum(distances)
+        cumulative_distance_pixels = np.cumsum(distances_pixels)
+        cumulative_distance_cm = np.cumsum(distances_cm)
         
         # Store data for CSV
-        cumulative_data[f'mouse{instance+1}_frame_distance'] = distances
-        cumulative_data[f'mouse{instance+1}_cumulative_distance'] = cumulative_distance
+        cumulative_data[f'mouse{instance+1}_frame_distance_pixels'] = distances_pixels
+        cumulative_data[f'mouse{instance+1}_frame_distance_cm'] = distances_cm
+        cumulative_data[f'mouse{instance+1}_cumulative_distance_pixels'] = cumulative_distance_pixels
+        cumulative_data[f'mouse{instance+1}_cumulative_distance_cm'] = cumulative_distance_cm
     
-        # Plot
-        plt.plot(cumulative_distance, label=f"Mouse {instance+1} ({node_name})", linewidth=2)
+        # Plot (pixels)
+        plt.plot(cumulative_distance_pixels, label=f"Mouse {instance+1} ({node_name})", linewidth=2)
     
     # Save cumulative distance data to CSV
     cumulative_df = pd.DataFrame(cumulative_data)
@@ -432,17 +666,74 @@ def analyze_cumulative_distance(locations, node_index, node_name, output_dir="./
     cumulative_df.to_csv(csv_path, index=False)
     print(f"Cumulative distance data saved to: {csv_path}")
     
-    # Final plot styling
+    # Save data split by seconds (aggregated per second)
+    cumulative_df['time_seconds_rounded'] = np.floor(time_seconds).astype(int)
+    seconds_data = cumulative_df.groupby('time_seconds_rounded').agg({
+        'mouse1_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse1_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse1_cumulative_distance_pixels': 'last',
+        'mouse1_cumulative_distance_cm': 'last',
+        'mouse2_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse2_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse2_cumulative_distance_pixels': 'last',
+        'mouse2_cumulative_distance_cm': 'last'
+    }).reset_index()
+    
+    # Flatten column names
+    seconds_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in seconds_data.columns.values]
+    seconds_data.rename(columns={'time_seconds_rounded_': 'time_seconds'}, inplace=True)
+    
+    seconds_csv_path = f"{output_dir}/{node_name}_cumulative_distances_by_seconds.csv"
+    seconds_data.to_csv(seconds_csv_path, index=False)
+    print(f"Cumulative distance data (by seconds) saved to: {seconds_csv_path}")
+    
+    # Save data split by minutes (aggregated per minute)
+    cumulative_df['time_minutes'] = np.floor(time_seconds / 60).astype(int)
+    minutes_data = cumulative_df.groupby('time_minutes').agg({
+        'mouse1_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse1_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse1_cumulative_distance_pixels': 'last',
+        'mouse1_cumulative_distance_cm': 'last',
+        'mouse2_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse2_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse2_cumulative_distance_pixels': 'last',
+        'mouse2_cumulative_distance_cm': 'last'
+    }).reset_index()
+    
+    # Flatten column names
+    minutes_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in minutes_data.columns.values]
+    minutes_data.rename(columns={'time_minutes_': 'time_minutes'}, inplace=True)
+    
+    minutes_csv_path = f"{output_dir}/{node_name}_cumulative_distances_by_minutes.csv"
+    minutes_data.to_csv(minutes_csv_path, index=False)
+    print(f"Cumulative distance data (by minutes) saved to: {minutes_csv_path}")
+    
+    # Final plot styling (pixels)
     plt.xlabel("Frame")
     plt.ylabel("Cumulative Distance Traveled (pixels)")
-    plt.title(f"Cumulative Distance Over Time — Node: {node_name}")
+    plt.title(f"Cumulative Distance Over Time (Pixels) — Node: {node_name}")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(f'{output_dir}/Cumulative-distance-over-time-{node_name}.pdf', format='pdf', bbox_inches="tight")
     plt.show()
+    
+    # Create additional centimeter plot
+    plt.figure(figsize=(12, 6))
+    for instance in [0, 1]:  # Loop over two mice again for centimeter plot
+        cumulative_distance_cm = cumulative_df[f'mouse{instance+1}_cumulative_distance_cm']
+        plt.plot(cumulative_distance_cm, label=f"Mouse {instance+1} ({node_name})", linewidth=2)
+    
+    plt.xlabel("Frame")
+    plt.ylabel("Cumulative Distance Traveled (cm)")
+    plt.title(f"Cumulative Distance Over Time (Centimeters) — Node: {node_name}")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/Cumulative-distance-over-time-{node_name}-CM.pdf', format='pdf', bbox_inches="tight")
+    plt.show()
 
-def plotting_SLEAP(file_path, main_node, fps=30, output_dir="./"):
+def plotting_SLEAP(file_path, main_node, fps=30, output_dir="./", box_size_inches=(11, 11)):
     """Main analysis pipeline for SLEAP tracking data."""
     # Validate inputs
     validate_file_path(file_path)
@@ -467,15 +758,17 @@ def plotting_SLEAP(file_path, main_node, fps=30, output_dir="./"):
     print()
     
     # Run all analyses
-    plot_node_trajectories(locations, node_index, main_node, output_dir)
-    inter_mouse_distance = analyze_inter_mouse_distance(locations, node_index, main_node, fps, output_dir)
-    vel_mouse1, vel_mouse2 = analyze_velocities(locations, node_index, main_node, output_dir)
-    analyze_cumulative_distance(locations, node_index, main_node, output_dir)
+    plot_node_trajectories(locations, node_index, main_node, fps, output_dir)
+    plot_spatial_trajectories_by_30min(locations, node_index, main_node, fps, output_dir)
+    inter_mouse_distance_pixels, inter_mouse_distance_cm = analyze_inter_mouse_distance(locations, node_index, main_node, fps, output_dir, box_size_inches)
+    vel_mouse1, vel_mouse2 = analyze_velocities(locations, node_index, main_node, fps, output_dir)
+    analyze_cumulative_distance(locations, node_index, main_node, fps, output_dir, box_size_inches)
     
     return {
         'locations': locations,
         'node_names': node_names,
-        'inter_mouse_distance': inter_mouse_distance,
+        'inter_mouse_distance_pixels': inter_mouse_distance_pixels,
+        'inter_mouse_distance_cm': inter_mouse_distance_cm,
         'velocities': {'mouse1': vel_mouse1, 'mouse2': vel_mouse2},
         'summary': summary
     }
@@ -496,10 +789,12 @@ def main():
             file_path=file_path,
             main_node=main_node,
             fps=config.fps,
-            output_dir=output_dir
+            output_dir=output_dir,
+            box_size_inches=(11, 11)  # Arena dimensions in inches
         )
         print("Analysis completed successfully!")
         print(f"Results saved to: {output_dir}")
+        print(f"Generated plots in both pixels and centimeters")
         
     except Exception as e:
         print(f"Error during analysis: {e}")
