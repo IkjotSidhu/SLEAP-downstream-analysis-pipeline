@@ -361,28 +361,43 @@ def plot_node_trajectories(locations, node_index, node_name, fps=30, output_dir=
     plt.savefig(f"{output_dir}/{node_name}_Node-Mouse-Tracking-plot.pdf", format='pdf', bbox_inches="tight")
     plt.show()
 
-def plot_spatial_trajectories_by_30min(locations, node_index, node_name, fps=30, output_dir="./"):
+def plot_spatial_trajectories_by_interval(locations, node_index, node_name, interval_minutes, fps=30, output_dir="./"):
     """
-    Plot spatial trajectories split into 30-minute intervals and save all plots into a single PDF file.
+    Plot spatial trajectories split into time intervals and save all plots into a single PDF file.
+    
+    Parameters:
+    -----------
+    locations : numpy.ndarray
+        SLEAP tracking data array
+    node_index : int
+        Index of the node to plot
+    node_name : str
+        Name of the node
+    interval_minutes : int
+        Time interval in minutes (e.g., 10, 15, 30)
+    fps : int
+        Frames per second
+    output_dir : str
+        Output directory path
     """
     import math
     from matplotlib.backends.backend_pdf import PdfPages
 
     nod_loc = locations[:, node_index, :, :]
-    frames_per_30min = int(30 * 60 * fps)
+    frames_per_interval = int(interval_minutes * 60 * fps)
     total_frames = nod_loc.shape[0]
-    n_intervals = math.ceil(total_frames / frames_per_30min)
+    n_intervals = math.ceil(total_frames / frames_per_interval)
 
-    pdf_path = f"{output_dir}/{node_name}_Spatial-Trajectories-by-30min.pdf"
+    pdf_path = f"{output_dir}/{node_name}_Spatial-Trajectories-by-{interval_minutes}min.pdf"
     with PdfPages(pdf_path) as pdf:
         for i in range(n_intervals):
-            start = i * frames_per_30min
-            end = min((i + 1) * frames_per_30min, total_frames)
+            start = i * frames_per_interval
+            end = min((i + 1) * frames_per_interval, total_frames)
             plt.figure(figsize=(10, 10))
             plt.plot(nod_loc[start:end, 0, 0], nod_loc[start:end, 1, 0], 'y', label='mouse-1', alpha=0.7)
             plt.plot(nod_loc[start:end, 0, 1], nod_loc[start:end, 1, 1], 'g', label='mouse-2', alpha=0.7)
             plt.legend()
-            plt.title(f"{node_name} Spatial Trajectories (Frames {start}–{end}) | Interval {i+1} of {n_intervals}")
+            plt.title(f"{node_name} Spatial Trajectories (Frames {start}–{end}) | Interval {i+1} of {n_intervals} ({interval_minutes} min)")
             plt.xlabel("X position (pixels)")
             plt.ylabel("Y position (pixels)")
             plt.axis('equal')
@@ -390,7 +405,7 @@ def plot_spatial_trajectories_by_30min(locations, node_index, node_name, fps=30,
             plt.tight_layout()
             pdf.savefig()
             plt.close()
-    print(f"Spatial trajectory plots (30-min intervals) saved to: {pdf_path}")
+    print(f"Spatial trajectory plots ({interval_minutes}-min intervals) saved to: {pdf_path}")
 
 def analyze_inter_mouse_distance(locations, node_index, node_name, fps=30, output_dir="./", box_size_inches=(11, 11)):
     """Calculate and plot inter-mouse distances in both pixels and centimeters."""
@@ -708,6 +723,27 @@ def analyze_cumulative_distance(locations, node_index, node_name, fps=30, output
     minutes_data.to_csv(minutes_csv_path, index=False)
     print(f"Cumulative distance data (by minutes) saved to: {minutes_csv_path}")
     
+    # Save data split by 5-minute intervals
+    cumulative_df['time_5min'] = np.floor(time_seconds / 300).astype(int)  # 300 seconds = 5 minutes
+    five_min_data = cumulative_df.groupby('time_5min').agg({
+        'mouse1_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse1_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse1_cumulative_distance_pixels': 'last',
+        'mouse1_cumulative_distance_cm': 'last',
+        'mouse2_frame_distance_pixels': ['sum', 'mean', 'count'],
+        'mouse2_frame_distance_cm': ['sum', 'mean', 'count'],
+        'mouse2_cumulative_distance_pixels': 'last',
+        'mouse2_cumulative_distance_cm': 'last'
+    }).reset_index()
+    
+    # Flatten column names
+    five_min_data.columns = ['_'.join(col).strip() if col[1] else col[0] for col in five_min_data.columns.values]
+    five_min_data.rename(columns={'time_5min_': 'time_5min_interval'}, inplace=True)
+    
+    five_min_csv_path = f"{output_dir}/{node_name}_cumulative_distances_by_5minutes.csv"
+    five_min_data.to_csv(five_min_csv_path, index=False)
+    print(f"Cumulative distance data (by 5 minutes) saved to: {five_min_csv_path}")
+    
     # Final plot styling (pixels)
     plt.xlabel("Frame")
     plt.ylabel("Cumulative Distance Traveled (pixels)")
@@ -759,7 +795,11 @@ def plotting_SLEAP(file_path, main_node, fps=30, output_dir="./", box_size_inche
     
     # Run all analyses
     plot_node_trajectories(locations, node_index, main_node, fps, output_dir)
-    plot_spatial_trajectories_by_30min(locations, node_index, main_node, fps, output_dir)
+    
+    # Generate spatial trajectory plots for multiple time intervals
+    for interval in [10, 15, 30]:
+        plot_spatial_trajectories_by_interval(locations, node_index, main_node, interval, fps, output_dir)
+    
     inter_mouse_distance_pixels, inter_mouse_distance_cm = analyze_inter_mouse_distance(locations, node_index, main_node, fps, output_dir, box_size_inches)
     vel_mouse1, vel_mouse2 = analyze_velocities(locations, node_index, main_node, fps, output_dir)
     analyze_cumulative_distance(locations, node_index, main_node, fps, output_dir, box_size_inches)

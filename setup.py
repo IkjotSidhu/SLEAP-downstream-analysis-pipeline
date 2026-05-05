@@ -16,7 +16,7 @@ with open('requirements.txt', 'r') as f:
 
 setup(
     name="sleap-analysis-pipeline",
-    version="1.0.0",
+    version="1.1.0",
     author="Ikjot Sidhu",
     author_email="ikjotsdh@bu.edu",
     description="A comprehensive Python pipeline for analyzing SLEAP tracking data",

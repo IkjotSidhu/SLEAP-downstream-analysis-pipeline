@@ -150,15 +150,14 @@ class TestUtilities:
         with pytest.raises(FileNotFoundError):
             validate_file_path("nonexistent_file.h5")
     
-    def test_validate_file_path_wrong_extension(self, capsys):
-        """Test file path validation with wrong extension."""
+    def test_validate_file_path_wrong_extension(self):
+        """Test file path validation raises ValueError for non-.h5 files."""
         with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as tmp:
             tmp_path = tmp.name
         
         try:
-            validate_file_path(tmp_path)
-            captured = capsys.readouterr()
-            assert "may not be a valid HDF5 file" in captured.out
+            with pytest.raises(ValueError, match="Expected .h5 file"):
+                validate_file_path(tmp_path)
         finally:
             Path(tmp_path).unlink()
     
