@@ -6,4 +6,5 @@ seaborn>=0.11.0
 h5py>=3.0.0
 pandas>=1.3.0
 sleap>=1.3.0
+opencv-python-headless>=4.5.0  # calibrate_arena.py: floor detection from video frames
 pathlib

@@ -6,10 +6,22 @@ The SLEAP analysis pipeline has been enhanced to generate distance plots and CSV
 
 ## 🆕 New Features
 
-### 1. **Automatic Pixel-to-Centimeter Conversion**
-- Calculates conversion factor based on arena dimensions (default: 11" × 11")
-- Uses the full range of animal movement to estimate pixel density
-- Conversion factor: `cm_per_pixel = arena_size_cm / pixel_range`
+### 1. **Calibrated Pixel-to-Centimeter Conversion**
+- Conversion factor is measured **once per recording from the box floor**, not
+  inferred from how far the animals moved.
+- `calibrate_arena.py` composites the video (removing the mice), detects the
+  11" floor width in pixels, and writes `arena_calibration.csv`.
+- Conversion factor: `cm_per_pixel = (11 × 2.54) / floor_width_px`
+- The pipeline looks up each recording's factor by file name, so the scale is
+  fixed and reproducible across sessions.
+
+> **Why not use the animals' movement range?** Earlier versions estimated the
+> scale from the span of tracked positions (`max − min`). That is biased low
+> when animals don't explore the full arena, corrupted by wall-climbing and
+> tracking spikes, and — critically — gives a *different* factor for every
+> recording, so cm values were not comparable across sessions. Measured floor
+> widths across a 12-video rig were constant to within 0.4%, while the
+> movement-based factor varied by ~22%.
 
 ### 2. **Enhanced CSV Outputs**
 All distance-related CSV files now include both pixel and centimeter measurements:
@@ -36,42 +48,52 @@ New PDF plots generated in centimeters:
 
 ## 🎯 Usage
 
-### Basic Usage with Default Arena Size (11" × 11")
+### Step 1 — Calibrate the rig (once)
+```bash
+python calibrate_arena.py \
+    --video-root "/path/to/Videos for SLEAP" \
+    --output arena_calibration.csv \
+    --montage calibration_montage.png
+# Review calibration_montage.png; fix any bad detection with:
+#   --manual VIDEO_BASENAME=<floor_width_px>
+```
+
+### Step 2 — Run the pipeline (factor resolved automatically)
 ```python
 from sleap_plotting import plotting_SLEAP
 
 results = plotting_SLEAP(
-    file_path="your_data.h5",
-    main_node="bodycenter", 
+    file_path="your_data.predictions.analysis.h5",
+    main_node="bodycenter",
     fps=30,
-    output_dir="./results"
-    # box_size_inches=(11, 11) is the default
+    output_dir="./results",
+    # cm_per_pixel is looked up from arena_calibration.csv by file name.
 )
 ```
 
-### Custom Arena Size
+### One-off override (no calibration entry)
 ```python
 results = plotting_SLEAP(
     file_path="your_data.h5",
     main_node="bodycenter",
-    fps=30, 
+    fps=30,
     output_dir="./results",
-    box_size_inches=(8, 12)  # Custom arena: 8" × 12"
+    cm_per_pixel=0.0817,   # explicit factor for this recording
 )
 ```
 
 ### Individual Analysis Functions
 ```python
-# Inter-mouse distance with centimeter conversion
+# Inter-mouse distance — pass the fixed calibration factor directly
 distances_px, distances_cm = analyze_inter_mouse_distance(
-    locations, node_index, "bodycenter", fps=30, 
-    output_dir="./results", box_size_inches=(11, 11)
+    locations, node_index, "bodycenter", cm_per_pixel=0.0817,
+    fps=30, output_dir="./results"
 )
 
-# Cumulative distance with centimeter conversion  
+# Cumulative distance
 analyze_cumulative_distance(
-    locations, node_index, "bodycenter", fps=30,
-    output_dir="./results", box_size_inches=(11, 11)
+    locations, node_index, "bodycenter", cm_per_pixel=0.0817,
+    fps=30, output_dir="./results"
 )
 ```
 
@@ -96,20 +118,31 @@ frame,time_seconds,inter_mouse_distance_pixels,inter_mouse_distance_cm,mouse1_x,
 ## 🧮 Conversion Details
 
 ### How It Works
-1. **Arena Specification**: You provide arena dimensions in inches
-2. **Pixel Range Calculation**: Algorithm finds the full range of animal movement in pixels
-3. **Conversion Factor**: `cm_per_pixel = (arena_size_inches × 2.54) / pixel_range`
-4. **Distance Conversion**: All pixel distances are multiplied by this factor
+1. **Composite the video**: `calibrate_arena.py` takes the per-pixel median over
+   ~80 evenly spaced frames. The mice move and the box does not, so the median
+   leaves a clean, static image of the arena.
+2. **Detect the floor width**: the bedding is segmented by local texture (bedding
+   is high-texture; the walls are smooth). The bedding spans the floor
+   wall-to-wall horizontally, so its pixel width equals the 27.94 cm floor width.
+3. **Conversion factor**: `cm_per_pixel = (11 × 2.54) / floor_width_px`, written
+   to `arena_calibration.csv` (one row per recording).
+4. **Distance Conversion**: the pipeline looks up each recording's factor by file
+   name and multiplies all pixel distances by it.
+
+Detection failures (e.g. bedding scattered up a wall) are flagged in the review
+montage; override any recording with `--manual VIDEO_BASENAME=<width_px>` or by
+editing the CSV.
 
 ### Assumptions
-- Animals utilize the full arena space during tracking
-- Arena is approximately square (uses larger dimension for conversion)
-- Tracking coordinates represent the full camera field of view
+- The 11" × 11" floor is the surface the mice walk on (the tracked plane).
+- The bedding reaches the left and right walls, so its horizontal extent equals
+  the floor width. (The angled camera view makes a single scalar factor a mild
+  approximation across the floor's depth; floor width is the most stable edge.)
 
 ### Validation
 For an 11" × 11" arena:
-- Expected diagonal: ~39.5 cm
-- Typical conversion: ~0.045 cm/pixel (varies by camera resolution and setup)
+- Expected diagonal: ~39.5 cm — a valid inter-animal distance can never exceed this.
+- Measured on this rig (640×480 video): floor ≈ 341 px → **~0.082 cm/pixel**.
 
 ## ⚠️ Important Notes
 
@@ -118,12 +151,14 @@ For an 11" × 11" arena:
 3. **Animal Movement**: More accurate if animals explore the full space
 4. **Square vs. Rectangle**: For non-square arenas, the larger dimension is used
 
-## 🔄 Backwards Compatibility
+## 🔄 Compatibility Notes
 
-- All original pixel-based functionality is preserved
-- Existing function signatures work without modification
-- New centimeter features are additive - original plots and CSVs still generated
-- Default arena size (11" × 11") used if not specified
+- All original pixel-based plots and CSVs are still generated.
+- **Signature change:** the distance functions now take a `cm_per_pixel` factor
+  instead of `box_size_inches`. `plotting_SLEAP` resolves it automatically from
+  `arena_calibration.csv`; pass `cm_per_pixel=<float>` to override.
+- Recordings with no calibration entry raise a clear error rather than silently
+  reporting distances in the wrong units.
 
 ## 📈 Benefits
 

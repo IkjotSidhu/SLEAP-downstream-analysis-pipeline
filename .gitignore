@@ -142,6 +142,9 @@ output/
 # Allow images in assets folder for documentation
 !assets/*.png
 !assets/*.svg
+
+# Arena calibration is committed config the pipeline reads at runtime
+!arena_calibration.csv
 !assets/*.jpg
 !assets/*.jpeg
 

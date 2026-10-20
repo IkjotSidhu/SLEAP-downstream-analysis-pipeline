@@ -60,7 +60,7 @@ class TestDataProcessing:
         """Test basic missing data filling."""
         # Create test data with missing values
         data = np.array([[1, 2, 3], [np.nan, 5, 6], [7, 8, 9]])
-        filled = fill_missing(data)
+        filled, _interp, _longgap = fill_missing(data)
         
         # Should interpolate the missing value
         assert not np.isnan(filled).any()
@@ -69,7 +69,7 @@ class TestDataProcessing:
     def test_fill_missing_all_nan(self):
         """Test filling when entire column is NaN."""
         data = np.array([[1, np.nan], [2, np.nan], [3, np.nan]])
-        filled = fill_missing(data)
+        filled, _interp, _longgap = fill_missing(data)
         
         # First column should be unchanged, second should remain NaN
         assert np.array_equal(filled[:, 0], [1, 2, 3])
@@ -78,11 +78,28 @@ class TestDataProcessing:
     def test_fill_missing_insufficient_data(self):
         """Test filling with insufficient data points."""
         data = np.array([[np.nan], [1], [np.nan]])
-        filled = fill_missing(data)
+        filled, _interp, _longgap = fill_missing(data)
         
         # Should handle gracefully (only one non-NaN point)
         assert filled.shape == data.shape
     
+    def test_fill_missing_masks_and_gap_cap(self):
+        """Interpolation masks flag filled frames; long gaps are reported."""
+        # Column with a short 1-frame gap and a long 4-frame gap.
+        col = np.array([0, np.nan, 2, 3, np.nan, np.nan, np.nan, np.nan, 8, 9],
+                       dtype=float).reshape(-1, 1)
+        filled, interp, longgap = fill_missing(col, max_gap_frames=2)
+
+        # All gaps are filled in the returned array (no NaN remains).
+        assert not np.isnan(filled).any()
+        # interp flags exactly the originally-missing frames.
+        expected_interp = np.isnan(col)
+        np.testing.assert_array_equal(interp, expected_interp)
+        # The 1-frame gap (index 1) is short -> not a long gap.
+        assert not longgap[1, 0]
+        # The 4-frame gap (indices 4..7 > max_gap_frames=2) is flagged long.
+        assert longgap[4:8, 0].all()
+
     def test_smooth_diff_basic(self):
         """Test basic velocity calculation."""
         # Create simple trajectory data

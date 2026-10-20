@@ -81,7 +81,7 @@ class TestEdgeCases:
         
         # Empty array
         empty_data = np.array([]).reshape(0, 2)
-        result = fill_missing(empty_data)
+        result, _interp, _longgap = fill_missing(empty_data)
         assert result.shape == empty_data.shape
     
     def test_single_frame(self):
