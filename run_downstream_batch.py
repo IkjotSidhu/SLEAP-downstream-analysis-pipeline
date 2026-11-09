@@ -26,6 +26,8 @@ def main():
     p.add_argument("--h5-dir", required=True)
     p.add_argument("--output-root", required=True)
     p.add_argument("--node", default="bodycenter")
+    p.add_argument("--calibration-csv", default=None,
+                   help="calibrate_arena.py CSV (default: arena_calibration.csv next to sleap_plotting.py)")
     args = p.parse_args()
 
     h5_files = sorted(glob.glob(os.path.join(args.h5_dir, "*.h5")))
@@ -43,7 +45,8 @@ def main():
         try:
             # Tee the pipeline's console output into the recording's log file.
             with open(log_path, "w") as log, contextlib.redirect_stdout(log):
-                sp.plotting_SLEAP(h5, main_node=args.node, output_dir=out_dir)
+                sp.plotting_SLEAP(h5, main_node=args.node, output_dir=out_dir,
+                                  calibration_csv=args.calibration_csv)
             ok.append(name)
             print(f"    done ({log_path})")
         except Exception as e:  # noqa: BLE001 - keep the batch going

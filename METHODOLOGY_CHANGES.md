@@ -214,3 +214,27 @@ property per recording, stored in `arena_calibration.csv`.
 - **No automatic track-swap correction** — flagged only, to avoid introducing
   wrong "corrections" (§4).
 - **2-animal assumption** is retained (this is a social-interaction pipeline).
+
+---
+
+## Update (November 2026): per-rig floor calibration replaces bedding texture
+
+**Problem.** The texture-based floor detection failed on 6 of 10 November 2026
+videos (widths 143–475 px) because nesting material, the food bowl and resting
+mice change the bedding texture every recording. Even its accepted values
+(344–348 px) included bedding piled against the walls; the true floor is ~328 px,
+so earlier cm distances (including the 341 px rig value above) were ~4–6% low.
+
+**Now.** Each rig is measured once from its four floor corners (`rigs.csv`).
+Every video is registered to its rig on the static walls; a shift > 3 px is
+reported as `CAMERA_MOVED` instead of producing a wrong scale. Distances use a
+floor homography, so the trapezoid/perspective approximation noted above is
+gone. See `CENTIMETER_ANALYSIS.md` for usage.
+
+**Also fixed.** `smooth_positions` padded with zeros, adding two fake ~80 px
+steps at the start and end of every recording (~20–28 cm per mouse); it now pads
+with edge values.
+
+**Action for older batches.** Re-run `calibrate_arena.py apply` with a rigs file
+for those boxes and regenerate plots, so all batches share the same calibration.
+

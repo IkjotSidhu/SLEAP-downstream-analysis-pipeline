@@ -17,6 +17,7 @@ Version: 1.2.0
 """
 
 import os
+import sys
 import csv
 from pathlib import Path
 
@@ -158,32 +159,43 @@ def calibration_key(file_path):
 
 
 def load_calibration(calibration_csv):
-    """Load {video_key: cm_per_pixel} from a calibrate_arena.py calibration CSV."""
+    """Load {video_key: row} from a calibrate_arena.py CSV.
+
+    Each row has ``cm_per_pixel`` (float or None), ``homography`` (3x3 array
+    mapping image px -> floor cm, or None for older scalar-only CSVs) and
+    ``source``.
+    """
     table = {}
     with open(calibration_csv, newline="") as f:
         for row in csv.DictReader(f):
-            table[row["video"]] = float(row["cm_per_pixel"])
+            h = (row.get("homography") or "").split()
+            table[row["video"]] = {
+                "cm_per_pixel": float(row["cm_per_pixel"]) if row.get("cm_per_pixel") else None,
+                "homography": np.array(h, dtype=float).reshape(3, 3) if len(h) == 9 else None,
+                "source": row.get("source", ""),
+            }
     return table
 
 
-def resolve_cm_per_pixel(file_path, cm_per_pixel=None, calibration_csv=None):
-    """Determine the pixel-to-centimeter factor for a recording.
+def resolve_calibration(file_path, cm_per_pixel=None, calibration_csv=None):
+    """Determine the pixel-to-centimeter calibration for a recording.
 
-    The factor is a fixed property of the camera/arena geometry, measured once
-    from the box floor by calibrate_arena.py -- it is NOT inferred from how far
-    the animals moved (which varies run to run and is not comparable across
-    sessions).
+    The calibration is a fixed property of the camera/arena geometry, measured
+    per rig by calibrate_arena.py -- it is NOT inferred from how far the animals
+    moved (which varies run to run and is not comparable across sessions).
 
     Priority:
-      1. an explicit ``cm_per_pixel`` value, if given;
+      1. an explicit ``cm_per_pixel`` value, if given (no perspective correction);
       2. a lookup in ``calibration_csv`` (default: the CSV shipped with this
          module) keyed by the recording's file name.
 
-    Raises KeyError if neither yields a value, so distances are never silently
-    reported in the wrong units.
+    Returns ``(cm_per_pixel, homography)``; ``homography`` is None when only a
+    scalar factor is available. Raises if the recording is missing or was not
+    calibrated (e.g. CAMERA_MOVED), so distances are never silently reported in
+    the wrong units.
     """
     if cm_per_pixel is not None:
-        return cm_per_pixel
+        return cm_per_pixel, None
 
     if calibration_csv is None:
         calibration_csv = DEFAULT_CALIBRATION_CSV
@@ -196,11 +208,29 @@ def resolve_cm_per_pixel(file_path, cm_per_pixel=None, calibration_csv=None):
             f"Run calibrate_arena.py on this recording's video, or pass "
             f"cm_per_pixel explicitly."
         )
-    factor = table[key]
-    print(f"Pixel-to-CM calibration for '{key}': {factor:.5f} cm/pixel "
-          f"(from {os.path.basename(calibration_csv)})")
+    entry = table[key]
+    if entry["cm_per_pixel"] is None:
+        raise ValueError(
+            f"Recording '{key}' is not calibrated (source={entry['source']}) in "
+            f"{calibration_csv}. Re-measure its rig with 'calibrate_arena.py reference'."
+        )
+    mode = "perspective-corrected" if entry["homography"] is not None else "single scale"
+    print(f"Pixel-to-CM calibration for '{key}': {entry['cm_per_pixel']:.5f} cm/pixel at floor "
+          f"centre, {mode} (from {os.path.basename(calibration_csv)}, source={entry['source']})")
     print()
-    return factor
+    return entry["cm_per_pixel"], entry["homography"]
+
+
+def pixels_to_cm(xy, homography, cm_per_pixel):
+    """Map an (N, 2) array of image px to floor cm (NaN rows stay NaN).
+
+    Uses the floor homography when available (corrects perspective), otherwise
+    the scalar factor.
+    """
+    if homography is None:
+        return xy * cm_per_pixel
+    pts = np.hstack([xy, np.ones((xy.shape[0], 1))]) @ homography.T
+    return pts[:, :2] / pts[:, 2:3]
 
 
 # ---- Data loading and missing-value handling --------------------------------
@@ -435,9 +465,12 @@ def smooth_positions(xy, window):
     if window is None or window <= 1 or xy.shape[0] < window:
         return xy
     kernel = np.ones(window) / window
+    # Pad with the edge values (not zeros) so the first/last frames are not
+    # pulled toward pixel (0, 0), which created fake large steps at both ends.
+    pad = (window // 2, window - 1 - window // 2)
     out = xy.copy()
     for c in range(xy.shape[1]):
-        out[:, c] = np.convolve(xy[:, c], kernel, mode="same")
+        out[:, c] = np.convolve(np.pad(xy[:, c], pad, mode="edge"), kernel, mode="valid")
     return out
 
 
@@ -483,21 +516,25 @@ def plot_node_trajectories(locations, node_index, node_name, interp_mask,
     """Plot node location trajectories over time and export CSVs."""
     config = config or AnalysisConfig()
     nod_loc = locations[:, node_index, :, :]
+    instance_count = nod_loc.shape[2]          # 1 (single mouse) or 2
+    colors = ['y', 'g', 'c', 'm']
 
     frames = np.arange(nod_loc.shape[0])
     time_seconds = frames / fps
-    interp1, _ = _frame_flags(interp_mask, interp_mask, node_index, 0)
-    interp2, _ = _frame_flags(interp_mask, interp_mask, node_index, 1)
 
-    trajectory_data = pd.DataFrame({
-        'frame': frames,
-        'time_seconds': time_seconds,
-        'mouse1_x': nod_loc[:, 0, 0],
-        'mouse1_y': nod_loc[:, 1, 0],
-        'mouse2_x': nod_loc[:, 0, 1],
-        'mouse2_y': nod_loc[:, 1, 1],
-        'interpolated': interp1 | interp2,
-    })
+    # Build per-mouse position columns for however many instances are present.
+    trajectory_cols = {'frame': frames, 'time_seconds': time_seconds}
+    traj_agg = {}
+    interp_any = np.zeros(len(frames), dtype=bool)
+    for inst in range(instance_count):
+        trajectory_cols[f'mouse{inst+1}_x'] = nod_loc[:, 0, inst]
+        trajectory_cols[f'mouse{inst+1}_y'] = nod_loc[:, 1, inst]
+        interp_i, _ = _frame_flags(interp_mask, interp_mask, node_index, inst)
+        interp_any |= interp_i
+        traj_agg[f'mouse{inst+1}_x'] = 'mean'
+        traj_agg[f'mouse{inst+1}_y'] = 'mean'
+    trajectory_cols['interpolated'] = interp_any
+    trajectory_data = pd.DataFrame(trajectory_cols)
     csv_path = f"{output_dir}/{node_name}_trajectories.csv"
     trajectory_data.to_csv(csv_path, index=False)
     print(f"Trajectory data saved to: {csv_path}")
@@ -505,16 +542,16 @@ def plot_node_trajectories(locations, node_index, node_name, interp_mask,
     # Per-second and per-minute means over observed frames only.
     _write_time_aggregations(
         trajectory_data,
-        agg_spec={'mouse1_x': 'mean', 'mouse1_y': 'mean',
-                  'mouse2_x': 'mean', 'mouse2_y': 'mean'},
+        agg_spec=traj_agg,
         bins=[(1, 'time_seconds', 'by_seconds'), (60, 'time_minutes', 'by_minutes')],
         output_base=f"{output_dir}/{node_name}_trajectories",
     )
 
     # Time series plot (x-coordinate over time)
     plt.figure(figsize=(12, 6))
-    plt.plot(nod_loc[:, 0, 0], 'y', label='mouse-1', linewidth=2)
-    plt.plot(nod_loc[:, 0, 1], 'g', label='mouse-2', linewidth=2)
+    for inst in range(instance_count):
+        plt.plot(nod_loc[:, 0, inst], colors[inst % len(colors)],
+                 label=f'mouse-{inst+1}', linewidth=2)
     plt.legend(loc="center right")
     plt.title(f"{node_name} X-coordinate over time")
     plt.xlabel("Frame")
@@ -525,8 +562,9 @@ def plot_node_trajectories(locations, node_index, node_name, interp_mask,
 
     # Spatial trajectory plot
     plt.figure(figsize=(10, 10))
-    plt.plot(nod_loc[:, 0, 0], nod_loc[:, 1, 0], 'y', label='mouse-1', alpha=0.7)
-    plt.plot(nod_loc[:, 0, 1], nod_loc[:, 1, 1], 'g', label='mouse-2', alpha=0.7)
+    for inst in range(instance_count):
+        plt.plot(nod_loc[:, 0, inst], nod_loc[:, 1, inst], colors[inst % len(colors)],
+                 label=f'mouse-{inst+1}', alpha=0.7)
     plt.legend()
     plt.title(f"{node_name} Spatial Trajectories")
     plt.xlabel("X position (pixels)")
@@ -544,6 +582,8 @@ def plot_spatial_trajectories_by_interval(locations, node_index, node_name,
     from matplotlib.backends.backend_pdf import PdfPages
 
     nod_loc = locations[:, node_index, :, :]
+    instance_count = nod_loc.shape[2]          # 1 (single mouse) or 2
+    colors = ['y', 'g', 'c', 'm']
     frames_per_interval = int(interval_minutes * 60 * fps)
     total_frames = nod_loc.shape[0]
     n_intervals = math.ceil(total_frames / frames_per_interval)
@@ -554,10 +594,9 @@ def plot_spatial_trajectories_by_interval(locations, node_index, node_name,
             start = i * frames_per_interval
             end = min((i + 1) * frames_per_interval, total_frames)
             plt.figure(figsize=(10, 10))
-            plt.plot(nod_loc[start:end, 0, 0], nod_loc[start:end, 1, 0], 'y',
-                     label='mouse-1', alpha=0.7)
-            plt.plot(nod_loc[start:end, 0, 1], nod_loc[start:end, 1, 1], 'g',
-                     label='mouse-2', alpha=0.7)
+            for inst in range(instance_count):
+                plt.plot(nod_loc[start:end, 0, inst], nod_loc[start:end, 1, inst],
+                         colors[inst % len(colors)], label=f'mouse-{inst+1}', alpha=0.7)
             plt.legend()
             plt.title(f"{node_name} Spatial Trajectories (Frames {start}–{end}) | "
                       f"Interval {i+1} of {n_intervals} ({interval_minutes} min)")
@@ -574,15 +613,22 @@ def plot_spatial_trajectories_by_interval(locations, node_index, node_name,
 # ---- Distance / velocity analyses -------------------------------------------
 def analyze_inter_mouse_distance(locations, node_index, node_name, cm_per_pixel,
                                  interp_mask, longgap_mask, fps=30, output_dir="./",
-                                 config=None):
+                                 config=None, homography=None):
     """Calculate and plot inter-mouse distances in pixels and centimeters.
 
-    ``cm_per_pixel`` is the fixed floor-calibration factor for this recording
-    (see resolve_cm_per_pixel / calibrate_arena.py). Frames in gaps too long to
+    ``cm_per_pixel`` / ``homography`` are the floor calibration for this
+    recording (see resolve_calibration / calibrate_arena.py); with a homography,
+    cm distances are measured after mapping both mice onto the floor plane,
+    which corrects perspective. Frames in gaps too long to
     trust are set to NaN; interpolated frames are flagged and excluded from the
     time-binned statistics.
     """
     config = config or AnalysisConfig()
+
+    # Inter-mouse distance is undefined with a single animal; skip it.
+    if locations.shape[3] < 2:
+        print("Only one instance present; skipping inter-mouse distance analysis.")
+        return None, None
 
     mouse1_xy = np.stack([locations[:, node_index, 0, 0],
                           locations[:, node_index, 1, 0]], axis=1)
@@ -598,7 +644,10 @@ def analyze_inter_mouse_distance(locations, node_index, node_name, cm_per_pixel,
     # Euclidean distance per frame; drop frames in gaps too long to trust.
     inter_mouse_distance_pixels = np.linalg.norm(mouse1_xy - mouse2_xy, axis=1)
     inter_mouse_distance_pixels[long_frame] = np.nan
-    inter_mouse_distance_cm = inter_mouse_distance_pixels * cm_per_pixel
+    inter_mouse_distance_cm = np.linalg.norm(
+        pixels_to_cm(mouse1_xy, homography, cm_per_pixel)
+        - pixels_to_cm(mouse2_xy, homography, cm_per_pixel), axis=1)
+    inter_mouse_distance_cm[long_frame] = np.nan
 
     frames = np.arange(len(inter_mouse_distance_pixels))
     time = frames / fps
@@ -667,53 +716,45 @@ def analyze_velocities(locations, node_index, node_name, interp_mask, longgap_ma
     """Calculate and plot velocity profiles for both mice."""
     config = config or AnalysisConfig()
     nod_loc = locations[:, node_index, :, :]
+    instance_count = nod_loc.shape[2]          # 1 (single mouse) or 2
 
-    vel_mouse1 = smooth_diff(nod_loc[:, :, 0],
-                             win=config.velocity_window, poly=config.velocity_poly_order)
-    vel_mouse2 = smooth_diff(nod_loc[:, :, 1],
-                             win=config.velocity_window, poly=config.velocity_poly_order)
-
-    # Flag / drop frames from gaps too long to trust.
-    interp1, long1 = _frame_flags(interp_mask, longgap_mask, node_index, 0)
-    interp2, long2 = _frame_flags(interp_mask, longgap_mask, node_index, 1)
-    vel_mouse1[long1] = np.nan
-    vel_mouse2[long2] = np.nan
-
-    frames = np.arange(len(vel_mouse1))
+    frames = np.arange(nod_loc.shape[0])
     time_seconds = frames / fps
-    velocity_data = pd.DataFrame({
-        'frame': frames,
-        'time_seconds': time_seconds,
-        'mouse1_velocity_pixels_per_frame': vel_mouse1,
-        'mouse2_velocity_pixels_per_frame': vel_mouse2,
-        'mouse1_velocity_pixels_per_second': vel_mouse1 * fps,
-        'mouse2_velocity_pixels_per_second': vel_mouse2 * fps,
-        'mouse1_x_position': nod_loc[:, 0, 0],
-        'mouse1_y_position': nod_loc[:, 1, 0],
-        'mouse2_x_position': nod_loc[:, 0, 1],
-        'mouse2_y_position': nod_loc[:, 1, 1],
-        'interpolated': interp1 | interp2,
-    })
+
+    # Compute velocities and build per-mouse columns for each present instance.
+    velocity_cols = {'frame': frames, 'time_seconds': time_seconds}
+    vel_agg = {}
+    interp_any = np.zeros(len(frames), dtype=bool)
+    velocities = []
+    for inst in range(instance_count):
+        vel = smooth_diff(nod_loc[:, :, inst],
+                          win=config.velocity_window, poly=config.velocity_poly_order)
+        interp_i, long_i = _frame_flags(interp_mask, longgap_mask, node_index, inst)
+        vel[long_i] = np.nan                   # drop frames from gaps too long to trust
+        interp_any |= interp_i
+        velocities.append(vel)
+        velocity_cols[f'mouse{inst+1}_velocity_pixels_per_frame'] = vel
+        velocity_cols[f'mouse{inst+1}_velocity_pixels_per_second'] = vel * fps
+        velocity_cols[f'mouse{inst+1}_x_position'] = nod_loc[:, 0, inst]
+        velocity_cols[f'mouse{inst+1}_y_position'] = nod_loc[:, 1, inst]
+        vel_agg[f'mouse{inst+1}_velocity_pixels_per_frame'] = ['mean', 'std', 'min', 'max']
+        vel_agg[f'mouse{inst+1}_velocity_pixels_per_second'] = ['mean', 'std', 'min', 'max']
+        vel_agg[f'mouse{inst+1}_x_position'] = 'mean'
+        vel_agg[f'mouse{inst+1}_y_position'] = 'mean'
+    velocity_cols['interpolated'] = interp_any
+    velocity_data = pd.DataFrame(velocity_cols)
     csv_path = f"{output_dir}/{node_name}_velocities.csv"
     velocity_data.to_csv(csv_path, index=False)
     print(f"Velocity data saved to: {csv_path}")
 
-    vel_agg = {
-        'mouse1_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
-        'mouse2_velocity_pixels_per_frame': ['mean', 'std', 'min', 'max'],
-        'mouse1_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
-        'mouse2_velocity_pixels_per_second': ['mean', 'std', 'min', 'max'],
-        'mouse1_x_position': 'mean', 'mouse1_y_position': 'mean',
-        'mouse2_x_position': 'mean', 'mouse2_y_position': 'mean',
-    }
     _write_time_aggregations(
         velocity_data, vel_agg,
         bins=[(1, 'time_seconds', 'by_seconds'), (60, 'time_minutes', 'by_minutes')],
         output_base=f"{output_dir}/{node_name}_velocities",
     )
 
-    # Mouse 1 position + velocity heatmap
-    for mouse_idx, vel in ((0, vel_mouse1), (1, vel_mouse2)):
+    # Per-mouse position + velocity heatmap
+    for mouse_idx, vel in enumerate(velocities):
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8), sharex=True)
         ax1.plot(nod_loc[:, 0, mouse_idx], 'k', label='x', linewidth=1.5)
         ax1.plot(-1 * nod_loc[:, 1, mouse_idx], 'r', label='-y', linewidth=1.5)
@@ -729,12 +770,13 @@ def analyze_velocities(locations, node_index, node_name, interp_mask, longgap_ma
         plt.tight_layout()
         _finalize_figure(output_dir, f"Mouse-{mouse_idx + 1}-{node_name}-velocity-plot", config)
 
-    return vel_mouse1, vel_mouse2
+    # Keep the two-value return contract; second value is None for a single mouse.
+    return velocities[0], (velocities[1] if instance_count > 1 else None)
 
 
 def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
                                 interp_mask, longgap_mask, fps=30, output_dir="./",
-                                config=None):
+                                config=None, homography=None):
     """Calculate and plot cumulative distance traveled, in pixels and centimeters.
 
     Positions are lightly smoothed and sub-noise steps are ignored so that
@@ -742,6 +784,7 @@ def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
     span a gap too long to trust are excluded from the sum (they contribute 0).
     """
     config = config or AnalysisConfig()
+    instance_count = locations.shape[3]        # 1 (single mouse) or 2
 
     plt.figure(figsize=(12, 6))
     frames = np.arange(locations.shape[0] - 1)  # diff reduces length by 1
@@ -749,7 +792,7 @@ def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
     cumulative_data = {'frame': frames, 'time_seconds': time_seconds}
     interpolated_step = np.zeros(len(frames), dtype=bool)
 
-    for instance in [0, 1]:
+    for instance in range(instance_count):
         xy = np.stack([locations[:, node_index, 0, instance],
                        locations[:, node_index, 1, instance]], axis=1)
 
@@ -757,18 +800,25 @@ def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
         xy_s = smooth_positions(xy, config.path_smoothing_window)
         steps = np.linalg.norm(np.diff(xy_s, axis=0), axis=1)
 
+        # Same smoothed path on the floor plane, in cm (perspective-corrected
+        # when a homography is available).
+        steps_cm = np.linalg.norm(np.diff(pixels_to_cm(xy_s, homography, cm_per_pixel), axis=0), axis=1)
+
         # Ignore sub-noise movement (stationary jitter).
-        steps[steps < config.path_noise_threshold_px] = 0.0
+        still = steps < config.path_noise_threshold_px
+        steps[still] = 0.0
+        steps_cm[still] = 0.0
 
         # Drop steps that span an untrustworthy long gap (endpoint at t or t+1).
         interp_i, long_i = _frame_flags(interp_mask, longgap_mask, node_index, instance)
         step_long = long_i[:-1] | long_i[1:]
         step_interp = interp_i[:-1] | interp_i[1:]
         steps[step_long] = np.nan
+        steps_cm[step_long] = np.nan
         interpolated_step |= step_interp
 
         distances_pixels = steps
-        distances_cm = distances_pixels * cm_per_pixel
+        distances_cm = steps_cm
         # nancumsum: excluded (NaN) steps contribute 0 to the running total.
         cumulative_distance_pixels = np.nancumsum(distances_pixels)
         cumulative_distance_cm = np.nancumsum(distances_cm)
@@ -787,16 +837,12 @@ def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
     cumulative_df.to_csv(csv_path, index=False)
     print(f"Cumulative distance data saved to: {csv_path}")
 
-    cum_agg = {
-        'mouse1_frame_distance_pixels': ['sum', 'mean', 'count'],
-        'mouse1_frame_distance_cm': ['sum', 'mean', 'count'],
-        'mouse1_cumulative_distance_pixels': 'last',
-        'mouse1_cumulative_distance_cm': 'last',
-        'mouse2_frame_distance_pixels': ['sum', 'mean', 'count'],
-        'mouse2_frame_distance_cm': ['sum', 'mean', 'count'],
-        'mouse2_cumulative_distance_pixels': 'last',
-        'mouse2_cumulative_distance_cm': 'last',
-    }
+    cum_agg = {}
+    for instance in range(instance_count):
+        cum_agg[f'mouse{instance+1}_frame_distance_pixels'] = ['sum', 'mean', 'count']
+        cum_agg[f'mouse{instance+1}_frame_distance_cm'] = ['sum', 'mean', 'count']
+        cum_agg[f'mouse{instance+1}_cumulative_distance_pixels'] = 'last'
+        cum_agg[f'mouse{instance+1}_cumulative_distance_cm'] = 'last'
     _write_time_aggregations(
         cumulative_df, cum_agg,
         bins=[(1, 'time_seconds', 'by_seconds'),
@@ -814,7 +860,7 @@ def analyze_cumulative_distance(locations, node_index, node_name, cm_per_pixel,
 
     # Cumulative distance (centimeters)
     plt.figure(figsize=(12, 6))
-    for instance in [0, 1]:
+    for instance in range(instance_count):
         plt.plot(cumulative_df[f'mouse{instance+1}_cumulative_distance_cm'],
                  label=f"Mouse {instance+1} ({node_name})", linewidth=2)
     plt.xlabel("Frame")
@@ -844,7 +890,7 @@ def plotting_SLEAP(file_path, main_node, fps=None, output_dir="./",
     create_output_directory(output_dir)
 
     # Resolve the fixed floor-calibration factor for this recording up front.
-    cm_per_pixel = resolve_cm_per_pixel(file_path, cm_per_pixel, calibration_csv)
+    cm_per_pixel, homography = resolve_calibration(file_path, cm_per_pixel, calibration_csv)
 
     # Load data, interpolating short gaps and flagging longer ones.
     max_gap_frames = int(round(config.max_interp_gap_seconds * fps))
@@ -881,13 +927,13 @@ def plotting_SLEAP(file_path, main_node, fps=None, output_dir="./",
 
     inter_mouse_distance_pixels, inter_mouse_distance_cm = analyze_inter_mouse_distance(
         locations, node_index, main_node, cm_per_pixel,
-        interp_mask, longgap_mask, fps, output_dir, config)
+        interp_mask, longgap_mask, fps, output_dir, config, homography)
     vel_mouse1, vel_mouse2 = analyze_velocities(
         locations, node_index, main_node, interp_mask, longgap_mask,
         fps, output_dir, config)
     analyze_cumulative_distance(
         locations, node_index, main_node, cm_per_pixel,
-        interp_mask, longgap_mask, fps, output_dir, config)
+        interp_mask, longgap_mask, fps, output_dir, config, homography)
 
     return {
         'locations': locations,

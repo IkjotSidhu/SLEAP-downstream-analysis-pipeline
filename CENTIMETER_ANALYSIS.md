@@ -6,14 +6,18 @@ The SLEAP analysis pipeline has been enhanced to generate distance plots and CSV
 
 ## 🆕 New Features
 
-### 1. **Calibrated Pixel-to-Centimeter Conversion**
-- Conversion factor is measured **once per recording from the box floor**, not
-  inferred from how far the animals moved.
-- `calibrate_arena.py` composites the video (removing the mice), detects the
-  11" floor width in pixels, and writes `arena_calibration.csv`.
-- Conversion factor: `cm_per_pixel = (11 × 2.54) / floor_width_px`
-- The pipeline looks up each recording's factor by file name, so the scale is
-  fixed and reproducible across sessions.
+### 1. **Calibrated Pixel-to-Centimeter Conversion (per rig)**
+- Each rig (box + camera, e.g. `NL1`, `NL2`) is measured **once**: the four
+  floor corners are marked on a clean reference frame and stored in `rigs.csv`.
+- `calibrate_arena.py apply` checks every video against its rig reference
+  (registration on the static walls only) and writes `arena_calibration.csv`
+  with a floor **homography** per recording. A camera shift larger than
+  `--max-shift` (3 px) marks the video `CAMERA_MOVED` instead of guessing.
+- Positions are mapped onto the 27.94 × 27.94 cm floor plane before distances
+  are computed, which removes the near/far perspective error of a single factor.
+  `cm_per_pixel` (local scale at the floor centre) is still written for reference.
+- The pipeline looks up each recording by file name, so the scale is fixed and
+  reproducible across sessions.
 
 > **Why not use the animals' movement range?** Earlier versions estimated the
 > scale from the span of tracked positions (`max − min`). That is biased low
@@ -48,14 +52,24 @@ New PDF plots generated in centimeters:
 
 ## 🎯 Usage
 
-### Step 1 — Calibrate the rig (once)
+### Step 1 — Measure each rig (once, and again only if its camera moves)
 ```bash
-python calibrate_arena.py \
-    --video-root "/path/to/Videos for SLEAP" \
-    --output arena_calibration.csv \
-    --montage calibration_montage.png
-# Review calibration_montage.png; fix any bad detection with:
-#   --manual VIDEO_BASENAME=<floor_width_px>
+python calibrate_arena.py reference --rig NL1 \
+    --video "/path/to/a_clean_NL1_video.mp4" \
+    --rigs rigs.csv --out-dir calibration_rigs \
+    --corners "165.6,22.9 499.2,29.8 500.7,351.5 175.6,350.0"   # TL TR BR BL floor corners (px)
+# Check calibration_rigs/NL1_corners_overlay.png: the outline must sit on the
+# wall/floor junction on all four sides.
+```
+
+### Step 1b — Calibrate a batch against its rigs
+```bash
+python calibrate_arena.py apply \
+    --video-root "/path/to/Videos for SLEAP" --rigs rigs.csv \
+    --output arena_calibration.csv --montage calibration_montage.png
+# Rig = the _NLx_ token in the video name, or --rig-map video,rig CSV.
+# CAMERA_MOVED / NO_RIG videos get no calibration and fail loudly downstream:
+# re-run 'reference' for a new rig entry and map those videos to it.
 ```
 
 ### Step 2 — Run the pipeline (factor resolved automatically)
@@ -118,31 +132,37 @@ frame,time_seconds,inter_mouse_distance_pixels,inter_mouse_distance_cm,mouse1_x,
 ## 🧮 Conversion Details
 
 ### How It Works
-1. **Composite the video**: `calibrate_arena.py` takes the per-pixel median over
-   ~80 evenly spaced frames. The mice move and the box does not, so the median
-   leaves a clean, static image of the arena.
-2. **Detect the floor width**: the bedding is segmented by local texture (bedding
-   is high-texture; the walls are smooth). The bedding spans the floor
-   wall-to-wall horizontally, so its pixel width equals the 27.94 cm floor width.
-3. **Conversion factor**: `cm_per_pixel = (11 × 2.54) / floor_width_px`, written
-   to `arena_calibration.csv` (one row per recording).
-4. **Distance Conversion**: the pipeline looks up each recording's factor by file
-   name and multiplies all pixel distances by it.
+1. **Composite the video**: the per-pixel median over ~80 evenly spaced frames
+   removes the mice and leaves a clean, static image of the box.
+2. **Register to the rig**: the composite's edge image (walls and floor outline
+   only; the floor interior and timestamp are masked out because bedding, nests,
+   bowls and resting mice change between recordings) is phase-correlated with
+   the rig reference to measure any camera shift.
+3. **Floor homography**: the rig's four floor corners (plus the measured shift)
+   are mapped onto a 27.94 cm square, giving a 3 × 3 transform from image px to
+   floor cm, written to `arena_calibration.csv`.
+4. **Distance conversion**: tracked positions are mapped to floor cm and
+   inter-mouse / path distances are measured there.
 
-Detection failures (e.g. bedding scattered up a wall) are flagged in the review
-montage; override any recording with `--manual VIDEO_BASENAME=<width_px>` or by
-editing the CSV.
+### Why the earlier bedding-texture method was replaced
+Bedding and nesting material pile up against the walls, so the textured area
+extends past the floor edge (typically 8–10 px per side on 640×480 video), and
+white nesting or a resting mouse can split it. On the November 2026 batch it
+failed on 6 of 10 videos (143–475 px), and even its "good" values (344–348 px)
+were ~5% wider than the true floor (~328 px), so cm distances came out ~5% low.
 
 ### Assumptions
-- The 11" × 11" floor is the surface the mice walk on (the tracked plane).
-- The bedding reaches the left and right walls, so its horizontal extent equals
-  the floor width. (The angled camera view makes a single scalar factor a mild
-  approximation across the floor's depth; floor width is the most stable edge.)
+- The 11" × 11" floor is the inner floor surface; corners are placed on the
+  wall/floor junction.
+- Mice are tracked close to the floor plane. Their body centre sits ~1–2 cm
+  above it, which on these rigs shifts scale by well under the bedding error the
+  old method had; tracked body centres span ~0–28 cm, matching the floor.
 
-### Validation
-For an 11" × 11" arena:
-- Expected diagonal: ~39.5 cm — a valid inter-animal distance can never exceed this.
-- Measured on this rig (640×480 video): floor ≈ 341 px → **~0.082 cm/pixel**.
+### Validation (November 2026, NL1 / NL2, 640×480)
+- Floor ≈ 328 px wide → **~0.0855 cm/pixel at the floor centre** on both rigs.
+- 9/10 videos registered within 1 px of their rig; one (NL1, 09-23 afternoon)
+  had moved ~14 px and was given its own reference.
+- 98–99.5% of tracked body-centre positions fall inside the calibrated floor.
 
 ## ⚠️ Important Notes
 
@@ -154,11 +174,13 @@ For an 11" × 11" arena:
 ## 🔄 Compatibility Notes
 
 - All original pixel-based plots and CSVs are still generated.
-- **Signature change:** the distance functions now take a `cm_per_pixel` factor
-  instead of `box_size_inches`. `plotting_SLEAP` resolves it automatically from
-  `arena_calibration.csv`; pass `cm_per_pixel=<float>` to override.
-- Recordings with no calibration entry raise a clear error rather than silently
-  reporting distances in the wrong units.
+- **Signature change:** the distance functions take `cm_per_pixel` and an
+  optional `homography`. `plotting_SLEAP` resolves both from
+  `arena_calibration.csv`; pass `cm_per_pixel=<float>` to override (no
+  perspective correction).
+- Older scalar-only calibration CSVs still load (no homography column).
+- Recordings with no calibration entry, or marked `CAMERA_MOVED` / `NO_RIG`,
+  raise a clear error rather than silently reporting distances in wrong units.
 
 ## 📈 Benefits
 
